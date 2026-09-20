@@ -23,8 +23,8 @@ prs = gh_json(["pr", "list", "--state", "open", "--json", "number,title,headRefN
 roster = [
     {"agent": "PM (main)",         "role": "调度/协调", "task": "Epic #1 · 计划",   "status": "ACTIVE"},
     {"agent": "BA (req)",          "role": "需求分析",  "task": "T1 · SPEC",        "status": "DONE"},
-    {"agent": "ARCH (arch)",       "role": "架构设计",  "task": "T2 · DESIGN",      "status": "RUNNING"},
-    {"agent": "DEV (dev)",         "role": "实现",      "task": "T3 · IMPL",        "status": "WAITING"},
+    {"agent": "ARCH (arch)",       "role": "架构设计",  "task": "T2 · DESIGN",      "status": "DONE"},
+    {"agent": "DEV (dev)",         "role": "实现",      "task": "T3 · IMPL",        "status": "RUNNING"},
     {"agent": "QA (qa)",           "role": "验证",      "task": "T4 · VERIFY",      "status": "WAITING"},
     {"agent": "DEVOPS (devops)",   "role": "部署",      "task": "T5 · DEPLOY",      "status": "WAITING"},
 ]
