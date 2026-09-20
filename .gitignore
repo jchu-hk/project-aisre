@@ -5,6 +5,12 @@ dist/
 *.log
 npm-debug.log*
 
+# --- ai-sre-service local runtime data (SQLite audit db, WAL) ---
+apps/ai-sre-service/data/
+*.db
+*.db-wal
+*.db-shm
+
 # --- Secrets / local env ---
 .env
 .env.*

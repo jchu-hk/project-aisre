@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "test:intake": "ts-node test/intake.smoke.ts",
     "test:query": "ts-node test/query.spec.ts",
+    "test:audit": "ts-node test/audit.spec.ts",
     "start": "node dist/main.js",
     "dev": "ts-node src/main.ts"
   },

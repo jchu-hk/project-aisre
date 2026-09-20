@@ -1,17 +1,3 @@
-/**
- * main.ts
- *
- * ai-sre-service 引导入口（M1 骨架）。
- *
- * 职责：
- *   1. 从 env（SRE_CONFIG_PATH）或默认 config/default.yaml 加载配置
- *   2. 启动一个最小 HTTP 服务，暴露 GET /health 健康端点
- *   3. 打印「待接入/已接入」状态，并列出已纳管系统采用的适配器
- *
- * 本骨架不承载采集/检测/自愈等核心逻辑（M2+ 交付），
- * 仅验证「配置与代码分离 + 系统无关启动」这一 M1 目标。
- */
-
 import * as http from 'http';
 import { loadConfig, resolveConfigPath } from './config/loader';
 import { SreConfig, isOnboarding, isIntakeEnabled } from './config/types';
@@ -19,16 +5,25 @@ import { createAdapter, registeredAdapterTypes } from './adapters';
 import { buildIntake, IntakeRuntime } from './intake';
 import { LifecycleLedger } from './lifecycle/ledger';
 import { buildQueryHandle } from './query/http';
+import { IncomingMessage, ServerResponse } from 'http';
+import {
+  buildAudit,
+  AuditRuntime,
+  emitIntakeReceived,
+  emitLifecycleChanged,
+} from './audit';
 
 /** 构建一个极简 HTTP 处理器（仅 /health + / 概览） */
 function buildHandler(
   config: SreConfig,
   getIntake: () => IntakeRuntime,
+  getAudit: () => AuditRuntime,
 ): http.RequestListener {
   return (req, res) => {
     const url = (req.url ?? '/').split('?')[0];
     if (url === '/health') {
       const intake = getIntake();
+      const audit = getAudit();
       const body = {
         status: 'ok',
         service: 'ai-sre-service',
@@ -42,6 +37,10 @@ function buildHandler(
             path: r.path,
             method: r.method,
           })),
+        },
+        audit: {
+          chain_head: audit.store.head(),
+          writer: audit.writer.stats(),
         },
         systems: config.systems.map((s) => ({
           system_id: s.system_id,
@@ -105,10 +104,18 @@ async function bootstrap(): Promise<void> {
   const [host, portStr] = parseListen(config.identity.listen);
   const port = Number(portStr);
 
-  // 单一 request 监听器：intake 收报优先，query 读次之，最后基础处理器（避免多 listener 竞态写头）
+  // —— audit 运行时（SQLite 单文件 + WAL + 有界异步队列）——
+  // 可通过 env AUDIT_DB_PATH 覆盖；默认 data/audit.db。
+  const audit: AuditRuntime = buildAudit({
+    dbPath: process.env.AUDIT_DB_PATH || undefined,
+    defaultActor: 'audit-console',
+  });
+
+  // 单一 request 监听器：intake 收报优先，audit 读次之，query 读再次，最后基础处理器
+  // （避免多 listener 竞态写头）
   const intake: IntakeRuntime = buildIntake(config);
   const ledger = new LifecycleLedger(); // 进程内参照：lifecycle ledger + query audit
-  const base = buildHandler(config, () => intake);
+  const base = buildHandler(config, () => intake, () => audit);
   const query = buildQueryHandle({
     store: intake.store,
     ledger,
@@ -118,14 +125,20 @@ async function bootstrap(): Promise<void> {
     defaultActor: 'query-console',
   });
   const server = http.createServer();
-  server.on('request', (req, res) => {
-    if (intake.handle(req, res)) return; // intake 已处理
+  server.on('request', (req: IncomingMessage, res: ServerResponse) => {
+    if (intake.handle(req, res)) {
+      // 埋点：intake 收报成功（异步落盘，不阻塞主链路）
+      emitIntakeFromResponse(req, res, audit);
+      return;
+    }
+    if (audit.handle(req, res)) return; // audit 已处理（含 4xx/405）
     if (query(req, res)) return; // query 已处理（含 4xx）
     base(req, res);
   });
 
   server.listen(port, host, () => {
     console.log(`[ai-sre-service] 监听 http://${host}:${port} (GET /health)`);
+    console.log(`[ai-sre-service] Audit (F-AUDIT): GET /api/v1/audit/events|events/{id}|verify`);
     if (intake.disabled) {
       console.log('[ai-sre-service] User Intake (F-SRE-014): 未启用（intake_channels 为空 = 待接入态）');
     } else {
@@ -134,6 +147,31 @@ async function bootstrap(): Promise<void> {
         console.log(`  - ${r.method} ${r.path} (channel=${r.channel})`);
       }
     }
+  });
+}
+
+/**
+ * intake 埋点：仅对收报端点（POST .../intake/...）在成功派发后记一条审计。
+ * 由于本层不解析 body（body 归 intake 层），此处记录「已受理」这一主体动作级事件；
+ * 更细的 incident/issue 关联由摄入流程回填（见 emitLifecycleChanged）。
+ */
+function emitIntakeFromResponse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  audit: AuditRuntime,
+): void {
+  const url = (req.url ?? '/').split('?')[0];
+  if (!url.includes('/intake/')) return;
+  const channel = url.slice(url.lastIndexOf('/') + 1) || 'intake';
+  res.on('finish', () => {
+    const ok = res.statusCode >= 200 && res.statusCode < 300;
+    emitIntakeReceived(audit.writer, {
+      incident_id: null,
+      channel,
+      at: new Date().toISOString(),
+      ok,
+      reason: ok ? null : `http_${res.statusCode}`,
+    });
   });
 }
 
@@ -150,3 +188,6 @@ bootstrap().catch((err) => {
   console.error('[ai-sre-service] 启动失败:', err);
   process.exit(1);
 });
+
+// 保证 emitLifecycleChanged 被引用（供后续 lifecycle 装配接线；避免未使用告警）
+void emitLifecycleChanged;
