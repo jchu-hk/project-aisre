@@ -1,0 +1,72 @@
+# ============================================================
+# AI SRE — 测试环境激活配置（User Intake 启用态）  F-SRE-014 / #370/#371
+# ============================================================
+# 部署位置（DEVOPS test-env）: 由 docker-compose.ai-sre.yml 以只读卷挂载进容器，
+# ai-sre-service 通过环境变量 SRE_CONFIG_PATH 指向本文件加载。
+#
+# 依 apps/ai-sre-service/src/config/types.ts 契约编写（与 config/default.yaml /
+# config/examples/school-admin-system.yaml 对齐）。
+#
+# ⚠️ 最小权限 / 无明文（NFR-S §5.8、F-SRE-010）:
+#   - secrets.signing_key_ref 仅是指向密钥管理器的【引用】，非明文密钥；
+#   - systems[].credential_ns 是凭证【命名空间引用】，不落明文；
+#   - 真实签名密钥 / 仓库令牌 / 回执地址一律经 Secret / 环境变量注入，不进本文件。
+# ============================================================
+
+identity:
+  instance_id: ai-sre-test-01
+  listen: "0.0.0.0:9090"
+
+secrets:
+  # 签名密钥引用（HMAC，经密钥管理解析，本文件不含明文）
+  signing_key_ref: "vault://ai-sre/signing-key"
+
+alert_channels:
+  # 协作层外发通道（告警升级 / 报障升级路由主渠道）
+  - type: write_message
+    endpoint: "skills/agent-communication/scripts/write_message.py"
+
+# ------------------------------------------------------------
+# 用户报障入口（F-SRE-014 user intake）—— 测试环境启用 1 个 webhook 通道
+# 置空/缺失 = intake 不启用（待接入态）；此处 ≥1 = intake 注册路由
+# ------------------------------------------------------------
+intake_channels:
+  - type: webhook
+    name: ops_webhook
+    verb: POST
+    path: "/api/sre/intake/ops_webhook"
+    enabled: true
+
+# 报障回执最小权限保留周期（NFR-S §5.8）
+intake_retention:
+  rawPayloadKeepDays: 30                 # 原始报文最小留存；到期自动清理（AUTO_CLEAN）
+  contactKeepDaysAfterClose: 7           # 关单后回执联系引用清除天数
+
+# ------------------------------------------------------------
+# 被纳管系统注册：School Admin System（backend + admin/portal）
+# adapter 用内置通用 HTTP 降级适配器（generic_http）。真实产物：
+#   - generic-http.adapter.ts 只做只读 health_endpoints / log_sources /
+#     resource_probes 探测与建模；不写回系统（旁路不侵入）。
+# ------------------------------------------------------------
+systems:
+  - system_id: school-admin-system
+    name: "School Admin System"
+    adapter: generic_http
+    profile_ref: "infra/ai-sre/active/school-admin-system.test.yaml"
+    credential_ns: "sas"                 # 凭证命名空间引用（无明文）
+    health_endpoints:
+      # 容器内同 compose 网络可达（school-network）：
+      - name: backend
+        url: "http://school-admin-backend:3000/api/health"
+      # 宿主可达（供以 --network host / localhost 直跑时解析，
+      # 或经 compose 网络外的 ops 校验）：
+      - name: backend-host
+        url: "http://localhost:3000/api/health"
+      - name: frontend-admin
+        url: "http://school-admin-frontend:80/"
+    log_sources:
+      - type: container_logs
+        match: "school-admin-backend,school-admin-frontend"
+    resource_probes:
+      - type: disk
+        mount: "/data"

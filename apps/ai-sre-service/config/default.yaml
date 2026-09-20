@@ -1,0 +1,31 @@
+# AI SRE 缺省配置（minimal config）
+#
+# 凭此即可启动并进入「待接入」状态（F-SRE-010 / AC-010）。
+# ⚠️ 本文件不含任何被纳管系统（SAS）的具体值——systems 为空 = 待接入。
+#    接入具体系统请新增 system 条目并指定 adapter；SAS 参考实例见
+#    config/examples/school-admin-system.yaml。
+
+identity:            # AI SRE 自身身份/监听端口
+  instance_id: ai-sre-01
+  listen: "0.0.0.0:9090"
+
+secrets:             # 密钥管理引用（非明文）
+  signing_key_ref: "vault://ai-sre/signing-key"
+
+alert_channels:      # 告警通道地址
+  - type: write_message
+    endpoint: "skills/agent-communication/scripts/write_message.py"
+
+intake_channels: [] # 用户报障入口（F-SRE-014）：空/缺失 = 待接入态，不启用 intake
+#  若要启用置为 ≥1 通道，例:
+#  - type: webhook
+#    name: ops_webhook
+#    endpoint: "https://..."        # 通用命名，不写死某套工单系统
+#  - type: webform
+#    name: user_form
+#    endpoint: "/"
+# intake_retention:
+#   rawPayloadKeepDays: 30          # 原始报文最小留存（NFR-S §5.8）
+#   contactKeepDaysAfterClose: 7    # 回执联系关单后清除天数
+
+systems: []          # 被纳管系统接入配置（可为空 = 待接入态）

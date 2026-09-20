@@ -1,0 +1,70 @@
+# ============================================================
+# AI SRE — 参考实例配置 Profile：School Admin System (SAS)
+# ============================================================
+# 关联 Issue: #370  (DESIGN-AI-SRE v0.2.0 附录「参考实例配置」, F-SRE-010)
+#
+# ⚠️ 重要说明:
+#   - 本文件是 SAS 作为 AI SRE 第一个参考部署实例的【示例配置】，
+#     非代码硬编码、非规范性约束。
+#   - AI SRE 本体镜像/代码不含任何 SAS 拓扑/端口/路径/组件构成；
+#     SAS 仅以这份默认示例 profile 随发行附带，可删除/替换，无硬编码特权。
+#   - 接入 SAS 时，仅需提供这份含下述取值的 profile，
+#     即可完成组件发现、建模与纳管。
+# ============================================================
+
+identity:
+  instance_id: ai-sre-sas
+  listen: "0.0.0.0:9090"
+
+secrets:
+  signing_key_ref: "vault://ai-sre/signing-key"
+
+alert_channels:
+  - type: write_message
+    endpoint: "skills/agent-communication/scripts/write_message.py"
+
+state_store_dsn: ""       # 生产回填 SAS PostgreSQL
+event_bus_dsn: ""         # 生产回填 SAS Kafka / Redis Streams
+
+# ------------------------------------------------------------
+# 被纳管系统：School Admin System（参考实例）
+# ------------------------------------------------------------
+systems:
+  - system_id: "school-admin-system"
+    name: "School Admin System"
+    adapter: sas            # 绑定 SAS Adapter（内置参考）
+    profile_ref: "profiles/sas.yaml"
+
+    # 组件发现与建模（以下为示例取值，非代码硬编码）
+    components:
+      frontends:            # 前端入口
+        - name: frontend
+          url: "http://localhost:8080"      # 示例值
+      services:             # 后端服务
+        - name: backend
+          url: "http://localhost:3000/api/health"  # 示例值
+      database:
+        type: postgresql
+        dsn_ref: "secret://sas/db-readonly"   # 只读凭证引用（非明文）
+      cache:
+        type: redis
+        dsn_ref: "secret://sas/redis-readonly"
+      log_sources: []       # 聚合日志源（生产回填）
+      health_endpoints: []
+      disk:
+        - path: "/var/lib/docker/volumes"     # 示例磁盘/资源路径
+
+    # 检测阈值（由 Learning Engine 按系统动态调整；此处为冷启动保守通用阈值）
+    thresholds:
+      disk_high_p2: 85
+      disk_full_p0: 95
+      conn_pool_warn: 80
+
+    # 自愈白名单策略初始值（per-system，版本化，受 §5 安全边界约束）
+    healing:
+      allowlist:
+        - action: container_restart
+          target_pattern: "school-admin-*"
+          # 无状态服务才自动重启；冷却期/每日上限见策略表
+
+    learning_state: cold_start   # cold_start | warm_up | learned

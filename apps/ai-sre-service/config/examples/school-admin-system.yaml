@@ -1,0 +1,49 @@
+# ============================================================
+# 示例配置 profile：School Admin System（SAS）
+#
+# 这是 AI SRE 发行附带的第一份「参考部署实例」示例配置，
+# 可删除/替换，不享有任何硬编码特权（F-SRE-010 / F-SRE-013）。
+# 代码/镜像中不出现以下任何地址/端口/容器名/路径——它们只在此 profile
+# 经配置注入。
+# ============================================================
+
+identity:
+  instance_id: ai-sre-sas-01
+  listen: "0.0.0.0:9090"
+
+secrets:
+  signing_key_ref: "vault://ai-sre/signing-key"
+
+alert_channels:
+  - type: write_message
+    endpoint: "skills/agent-communication/scripts/write_message.py"
+
+# 用户报障入口（F-SRE-014）——SAS reference 默认启用 1 个 webhook/webform 通道（§2.4）
+intake_channels:
+  - type: webhook
+    name: sas_ops
+    verb: POST
+    path: "/api/sre/intake/sas_ops"
+    enabled: true
+intake_retention:
+  rawPayloadKeepDays: 30
+  contactKeepDaysAfterClose: 7
+
+# 被纳管系统（本示例仅一个系统：school-admin-system）
+systems:
+  - system_id: school-admin-system
+    adapter: generic_http
+    profile_ref: config/examples/school-admin-system.yaml
+    credential_ns: sas
+    # —— 以下为 SAS 特定接入配置（仅示例，非规范性约束）——
+    health_endpoints:
+      - name: backend
+        url: "http://backend:3000/api/health"
+      - name: frontend-admin
+        url: "http://frontend:8080/school-admin/"
+    log_sources:
+      - type: container_logs
+        match: "backend,frontend"
+    resource_probes:
+      - type: disk
+        mount: "/data"

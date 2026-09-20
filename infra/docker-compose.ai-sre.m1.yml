@@ -1,0 +1,111 @@
+# ============================================================
+# AI SRE 运维 Agent — 部署编排骨架（DEVOPS / M1）
+# ============================================================
+# 关联 Issue: #370  (DESIGN-AI-SRE v0.2.0, FUNCTIONAL-SPEC-AI-SRE v0.3.1)
+# 用途: 声明 AI SRE 服务的运行拓扑、资源配额、存储卷、Secret 挂载。
+#
+# ⚠️ 配置与代码分离（F-SRE-010 / NFR-X）:
+#   - 本编排清单【不写死】任何被纳管系统（含 SAS）的端口/地址/路径/组件。
+#   - 目标系统地址、端口、路径、凭据引用、阈值、策略、告警通道
+#     全部通过「配置卷」（${AI_SRE_CONFIG_DIR}）注入，见下方 volumes。
+#   - 空环境仅提供最小配置即可启动并进入「待接入」状态；
+#     SAS 示例配置仅作为参考实例 profile 附带，见 infra/ai-sre/profiles/。
+#
+# 使用:
+#   AI_SRE_CONFIG_DIR=$(pwd)/infra/ai-sre/profiles \
+#   docker compose -f infra/docker-compose.ai-sre.yml up -d
+#
+#   docker compose -f infra/docker-compose.ai-sre.yml down
+# ============================================================
+
+services:
+  # ------------------------------------------------------------
+  # AI SRE 核心运行时（规则+策略引擎，7x24 常驻）
+  # ------------------------------------------------------------
+  ai-sre-service:
+    # 镜像带版本 + 签名；零系统硬编码，跨环境复用同一镜像。
+    # 实际镜像地址由 CI/发布阶段回填（占位，不写死内部 registry 地址）。
+    image: ${AI_SRE_IMAGE:-ghcr.io/jchu-hk/school-admin-system/ai-sre:latest}
+    container_name: ai-sre-service
+    restart: unless-stopped
+
+    # 运行时环境变量：仅自身身份 + 外部依赖引用（系统无关命名）。
+    # 所有被纳管系统差异一律在配置卷内，不通过环境变量硬编码。
+    environment:
+      # AI SRE 自身身份与监听端口
+      AI_SRE_INSTANCE_ID: ${AI_SRE_INSTANCE_ID:-ai-sre-01}
+      AI_SRE_LISTEN: ${AI_SRE_LISTEN:-0.0.0.0:9090}
+      # 配置目录（容器内挂载点，对应外部 AI_SRE_CONFIG_DIR）
+      AI_SRE_CONFIG_DIR: /etc/ai-sre/config
+      # 密钥管理引用（非明文；签名/凭证由 Secret 注入）
+      AI_SRE_SIGNING_KEY_REF: ${AI_SRE_SIGNING_KEY_REF:-vault://ai-sre/signing-key}
+      # 事件总线 / 状态存储（外部依赖，地址由配置或下述变量注入）
+      EVENT_BUS_DSN: ${EVENT_BUS_DSN:-}
+      STATE_STORE_DSN: ${STATE_STORE_DSN:-}
+      # 协作层：Agent 生态写消息脚本路径（告警升级路由）
+      AGENT_WRITE_MESSAGE: ${AGENT_WRITE_MESSAGE:-skills/agent-communication/scripts/write_message.py}
+
+    ports:
+      # AI SRE 自身健康/就绪端点（供 PM watchdog + OPS 对等对账探测）
+      - "${AI_SRE_PORT:-9090}:9090"
+
+    volumes:
+      # 配置卷：目标系统 profile（sas.yaml 等）、阈值/策略/白名单。
+      # 只挂配置到已知目录，不写死任何系统具体地址/端口——这些在配置里。
+      - ${AI_SRE_CONFIG_DIR:-./infra/ai-sre/profiles}:/etc/ai-sre/config:ro
+      # 状态持久化（学习基线/审计，按 system_id 隔离，由后端状态库承载时可为空挂载）
+      - ai_sre_state:/var/lib/ai-sre
+
+    # Secret 挂载（签名密钥、被纳管系统凭证，按 namespace 隔离）。
+    # 生产环境使用 docker secret / vault 注入，此处仅声明挂载点。
+    # secrets:
+    #   - ai_sre_signing_key
+
+    # 依赖：事件总线（可配置替换为 Kafka/Redis Streams）与状态库。
+    # M1 骨架阶段不强制拉起外部依赖，标注 depends_on 便于 M6 接入。
+    # depends_on:
+    #   - event-bus
+    #   - state-store
+
+    healthcheck:
+      # AI SRE 自身就绪探头（/healthz 由 ai-sre-service 暴露）
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    # 资源配额（可调，避免影响主链路）
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+    networks:
+      - ai-sre-network
+
+# ============================================================
+# Networks
+# ============================================================
+networks:
+  ai-sre-network:
+    driver: bridge
+    name: ai-sre-network
+
+# ============================================================
+# Volumes (Persistent State)
+# ============================================================
+volumes:
+  ai_sre_state:
+    name: ai-sre-state
+
+# ============================================================
+# Secrets（生产环境注入；骨架阶段注释，M6 启用）
+# ============================================================
+# secrets:
+#   ai_sre_signing_key:
+#     file: ./infra/ai-sre/secrets/signing-key.txt

@@ -1,0 +1,26 @@
+# ============================================================
+# AI SRE — 最小配置（Minimal Config）
+# ============================================================
+# 关联 Issue: #370  (DESIGN-AI-SRE v0.2.0 §2.4, F-SRE-010 AC-010)
+#
+# 凭此即可启动 AI SRE 并进入「待接入」状态。
+# 此处【不含任何 SAS 特定项】——被纳管系统差异全部在此配置内注入，
+# 核心镜像与代码零系统硬编码。
+# ============================================================
+
+identity:                 # AI SRE 自身身份 / 监听端口
+  instance_id: ai-sre-01
+  listen: "0.0.0.0:9090"
+
+secrets:                  # 密钥管理引用（非明文）
+  signing_key_ref: "vault://ai-sre/signing-key"
+
+alert_channels:           # 告警通道地址（协作层）
+  - type: write_message
+    endpoint: "skills/agent-communication/scripts/write_message.py"
+
+# 状态 / 事件存储（外部依赖 DSN，系统无关命名）
+state_store_dsn: ""       # PostgreSQL DSN（Audit/学习/限流持久层）
+event_bus_dsn: ""         # Kafka / Redis Streams（事件总线）
+
+systems: []               # 被纳管系统接入配置（空 = 待接入态）

@@ -1,0 +1,80 @@
+# ============================================================
+# AI SRE Service — 测试环境部署编排（可运行版，匹配实际交付代码）
+# 关联: Issue #370/#371 apps/ai-sre-service（已由 QA 验证）
+#
+# 说明: 目录内另有一份 M1 的「编排骨架」(docker-compose.ai-sre.yml M1 era, 引用
+# ghcr 镜像 / profile 目录 / /healthz)，其 schema 与交付代码不一致，不能直接运行。
+# 本文件是【可运行的测试环境部署】：本地构建源码镜像 + 挂载启用配置，接入既有
+# school-network（school-admin-network），不改动主 compose 的既存 14 容器。
+#
+# 用法:
+#   docker compose -f infra/docker-compose.ai-sre.yml up -d --build
+#   docker compose -f infra/docker-compose.ai-sre.yml logs -f ai-sre-service
+#   docker compose -f infra/docker-compose.ai-sre.yml down
+# ============================================================
+name: ai-sre
+
+services:
+  ai-sre-service:
+    # 本地构建自交付源码（apps/ai-sre-service），不经 ghcr（尚未发布 CI）。
+    build:
+      context: ../apps/ai-sre-service
+      dockerfile: Dockerfile
+    image: ai-sre:test-env
+    container_name: ai-sre-service
+    restart: unless-stopped
+
+    environment:
+      # 服务只读一组启用配置（单文件）——SRE_CONFIG_PATH 由镜像 ENV 提供，此处显式再指一次
+      SRE_CONFIG_PATH: /etc/ai-sre/school-admin-system.test.yaml
+      # 供 write_message 协作外发脚本定位（仅 alert_channels 使用该脚本时需容器内可达）
+      AGENT_WRITE_MESSAGE: /app/scripts/write_message.py
+      NODE_ENV: production
+
+    ports:
+      - "9090:9090"
+
+    volumes:
+      # 启用配置（只读）挂到容器内 SRE_CONFIG_PATH 指向处
+      - ./ai-sre/active:/etc/ai-sre:ro
+      # 状态卷（骨架期 ai-sre-service 为进程内 store，卷保留备用）
+      - ai_sre_state:/var/lib/ai-sre
+
+    healthcheck:
+      # 交付出厂健康端点为 GET /health。服务只监听 IPv4(0.0.0.0)，
+      # busybox wget 解析 localhost 可能优先 ::1 → 用 127.0.0.1。
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    networks:
+      - school-network
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+
+networks:
+  # 复用既有主 compose 的 school-network（实际网络名 school-admin-network）
+  school-network:
+    external: true
+    name: school-admin-network
+
+volumes:
+  ai_sre_state:
+    name: ai-sre-state

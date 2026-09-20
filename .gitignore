@@ -1,0 +1,22 @@
+# --- Node / build artifacts ---
+node_modules/
+dist/
+*.tsbuildinfo
+*.log
+npm-debug.log*
+
+# --- Secrets / local env ---
+.env
+.env.*
+!config/examples/*.yaml
+
+# --- Local credentials / access keys (never commit) ---
+new-github-accesskey.txt
+*accesskey*
+*.token
+*.pem
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
