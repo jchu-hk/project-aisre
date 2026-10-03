@@ -30,6 +30,12 @@ services:
       # 供 write_message 协作外发脚本定位（仅 alert_channels 使用该脚本时需容器内可达）
       AGENT_WRITE_MESSAGE: /app/scripts/write_message.py
       NODE_ENV: production
+      # —— F-AUDIT / F-APPROVE / F-CHAT SQLite 持久化路径 ——
+      # 容器为 read_only 根文件系统，store 默认 data/*.db（相对 cwd /opt/ai-sre）不可写。
+      # 指向可写卷 /var/lib/ai-sre（ai-sre-state），否则启动即 EROFS / SQLITE_CANTOPEN。
+      AUDIT_DB_PATH: /var/lib/ai-sre/audit.db
+      APPROVAL_DB_PATH: /var/lib/ai-sre/approval.db
+      CHAT_DB_PATH: /var/lib/ai-sre/chat.db
 
     ports:
       - "9090:9090"

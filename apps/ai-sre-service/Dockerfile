@@ -3,8 +3,13 @@
 # 关联: Issue #370/#371 apps/ai-sre-service
 #   仅生产依赖 + dist + config 入运行态；build 中间产物不留在镜像。
 #   零被纳管系统硬编码：地址/端点/通道全经 SRE_CONFIG_PATH 注入。
+#
+# 基础镜像选用 node:24-alpine（非 22）：F-AUDIT/F-APPROVE/F-CHAT 均使用内建
+# node:sqlite（DatabaseSync），Node 24.4+ 起无需 --experimental-sqlite 标志即可
+# 稳定加载（22.x 需该标志且仅实验态）。本地开发/测试运行于 Node v24.13.1，故镜像
+# 与之对齐，避免在 runtime 注入 NODE_OPTIONS 标志的额外复杂度。
 # ============================================================
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /opt/ai-sre
 # 注: 本服务仅有 js-yaml + 构建工具(typescript/ts-node) 的小型稳定依赖集；
 # 用 npm install 以识别 ranges（见 runbook §9 关于 lockfile 的说明）。
@@ -15,7 +20,7 @@ COPY src ./src
 RUN npm run build
 
 # ---------------- 运行态 ----------------
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /opt/ai-sre
 
