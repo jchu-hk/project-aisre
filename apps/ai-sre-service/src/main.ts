@@ -18,6 +18,7 @@ import {
   seedInitialWhitelist,
   WhitelistEntry,
 } from './approval';
+import { buildChat, ChatRuntime } from './chat';
 
 /** 构建一个极简 HTTP 处理器（仅 /health + / 概览） */
 function buildHandler(
@@ -25,6 +26,7 @@ function buildHandler(
   getIntake: () => IntakeRuntime,
   getAudit: () => AuditRuntime,
   getApproval: () => ApprovalRuntime,
+  getChat: () => ChatRuntime,
 ): http.RequestListener {
   return (req, res) => {
     const url = (req.url ?? '/').split('?')[0];
@@ -32,6 +34,7 @@ function buildHandler(
       const intake = getIntake();
       const audit = getAudit();
       const approval = getApproval();
+      const chat = getChat();
       const body = {
         status: 'ok',
         service: 'ai-sre-service',
@@ -56,6 +59,13 @@ function buildHandler(
             { state: undefined },
             { page: 1, size: 1 },
           ).total,
+        },
+        chat: {
+          enabled: true,
+          rate_limit: {
+            per_user: 60,
+            per_ip: 120,
+          },
         },
         systems: config.systems.map((s) => ({
           system_id: s.system_id,
@@ -143,7 +153,18 @@ async function bootstrap(): Promise<void> {
   // 最后基础处理器（避免多 listener 竞态写头）
   const intake: IntakeRuntime = buildIntake(config);
   const ledger = new LifecycleLedger(); // 进程内参照：lifecycle ledger + query audit
-  const base = buildHandler(config, () => intake, () => audit, () => approval);
+
+  // —— chat 运行时（F-CHAT：鉴权 + 会话 + RBAC + 防注入 + 工具调用 gate）——
+  // 工具调用 gate 复用 approval.engine（唯一拦截点，不可旁路）；
+  // 每条消息/动作/会话事件经 audit.writer 异步发审计（FR-CHAT-006）。
+  const chat: ChatRuntime = buildChat({
+    dbPath: process.env.CHAT_DB_PATH || undefined,
+    approval: approval.engine,
+    audit: audit.writer,
+    secret: process.env.CHAT_JWT_SECRET || undefined,
+  });
+
+  const base = buildHandler(config, () => intake, () => audit, () => approval, () => chat);
   const query = buildQueryHandle({
     store: intake.store,
     ledger,
@@ -161,6 +182,7 @@ async function bootstrap(): Promise<void> {
     }
     if (audit.handle(req, res)) return; // audit 已处理（含 4xx/405）
     if (approval.handle(req, res)) return; // approval 已处理（含 4xx/405）
+    if (chat.handle(req, res)) return; // chat 已处理（含 401/403/429/4xx）
     if (query(req, res)) return; // query 已处理（含 4xx）
     base(req, res);
   });
@@ -173,6 +195,12 @@ async function bootstrap(): Promise<void> {
     );
     console.log(
       `[ai-sre-service]  白名单生效版本: v${approval.store.currentVersion()?.version ?? '-'}（未命中一律走审批，fail-closed）`,
+    );
+    console.log(
+      `[ai-sre-service] Chat (F-CHAT): POST /api/v1/chat/login|refresh; POST /api/v1/chat/sessions; POST /api/v1/chat/sessions/{id}/messages|logout|kill; GET /api/v1/chat/sessions/{id}`,
+    );
+    console.log(
+      '[ai-sre-service]  Chat 鉴权: 短期 JWT(HS256, ≤1h) + refresh 轮换；RBAC 角色 {值班SRE/平台负责人/安全负责人/审计员}',
     );
     if (intake.disabled) {
       console.log('[ai-sre-service] User Intake (F-SRE-014): 未启用（intake_channels 为空 = 待接入态）');

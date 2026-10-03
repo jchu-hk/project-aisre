@@ -147,3 +147,22 @@ Phase 2 在 Phase 1「可观测 + 自动化」基础上，补齐三项围绕 **�
 - 多租户计费、非企业身份体系（如开放注册）的对接。
 - 审批流的多级复杂编排（如条件分支、会签矩阵）——本阶段仅两层审批 + 超时拒绝。
 - 审计日志的跨区域容灾与备份策略（后续运维事项）。
+
+---
+
+## 7. 实现状态（T3.3 F-CHAT）
+
+| 需求 | 实现 | 测试 |
+|------|------|------|
+| FR-CHAT-001 短期 JWT（≤1h）+ refresh 轮换 | `src/chat/jwt.ts`（HS256/`node:crypto` + 恒定时间比对）、`chat-engine.ts` login/refresh | chat.spec A/E |
+| FR-CHAT-002 RBAC | `src/chat/rbac.ts`（角色权限矩阵 `ROLE_PERMISSIONS`；动作→权限映射） | chat.spec C |
+| FR-CHAT-003 会话（唯一 session_id / 30min 空闲超时 / 登出吊销） | `chat-store.ts`、`chat-engine.ts` guardSession/logout | chat.spec B |
+| FR-CHAT-004 防注入（通道分离 / 模式检测 / 工具调用必经 F-APPROVE / 检索内容不可信） | `system-prompt.ts`、`injection.ts`、`chat-engine.handleActionIntent`（唯一拦截点 = `ApprovalEngine.judgeOperation`） | chat.spec D/H |
+| FR-CHAT-005 限流 + CSRF + 输出防泄露 + kill switch | `rate-limit.ts`、`http.ts`（cookie 双提交 CSRF）、`system-prompt.redactSecrets`、`chat-engine.killSession` | chat.spec F/G |
+| FR-CHAT-006 可追溯（session_id + user → F-AUDIT） | `chat-engine.emit` → `AuditWriter`，`action_type=chat.*`、`why_source='chat'` | chat.spec I |
+
+**HTTP 端点**（`src/chat/http.ts`，路径前缀 `/api/v1/chat`）：
+`POST /login`、`POST /refresh`、`POST /sessions`、`GET /sessions/{id}`、`POST /sessions/{id}/messages`、`POST /sessions/{id}/logout`、`POST /sessions/{id}/kill`。
+鉴权失败统一 HTTP 401；RBAC 拒绝 403；限流 429（带 `Retry-After`）；注入高危 403；方法不符 405；入参非法 422。
+
+**验收对照**：AC-CHAT-001~006 全部由 `test/chat.spec.ts`（28 项）覆盖；事务、迁移见 `db/migrations/0005_phase2_chat.sql`。

@@ -278,12 +278,30 @@ CREATE TRIGGER IF NOT EXISTS trg_qa_no_delete BEFORE DELETE ON sre_incident_quer
 > `CREATE INDEX idx_qa_filter_lifecycle ON sre_incident_query_audit(json_extract(filters,'$.lifecycle'));`（仅在明确筛选热路径需要时加）。
 
 ## 6. 隔离与权限（SQLite 承接 §12.7 / §12.1，无 PG 角色/RLS）
-
 - **记录层为单部署单客户 + app 单写者**：per-`system_id` 隔离在 **app repository 层强制**（读路径 `IncidentReader`/查询末尾恒补 `system_id` 谓词 + 越权拒绝），见 DESIGN §7/§12.2b；SQLite 内不再有 PG 那类角色授予。
 - **append-only / 防篡改护栏**：审计取证类表（transitions / query_audit）以 `BEFORE UPDATE/DELETE` 触发器 `RAISE(ABORT,…)` 拒绝裸改/删（DDL §5.2/5.3）；正常写入仅经 app append-only writer。TRUNCATE 在 SQLite 等价为逐 DELETE（被触发器拦截）。
 - **写权限收口**：对外引用 `sre.db` 的账户以文件级最小权限（OS 用户/卷权限）运行；WAL 副文件 `-wal`/`-shm` 同目录归属受限。
 - **schema / 版本**：`schema_version` 由 app 启动幂等迁移维护，DBA 无独立角色表。
 - **哈希链 / WORM（动作与决策审计，DESIGN §12.1/12.4）**：记录层 SQLite 内若承接 `sre_audit_events`/`sre_decision_records`，哈希链 / 只读校验以 app 见证层实现（本期先落在记录层 incident 表 + 触发器护栏，完整方案随 #Issue 后续落）。本文件 #372 范围表护栏即上表触发器。
+
+## 5b. Phase 2 表（F-AUDIT / F-APPROVE / F-CHAT，SPEC-PHASE2）
+
+Phase 2 三特性各自伴随迁移落 DDL（不覆盖既有表），进程内参照实现为 `node:sqlite` 单文件 + WAL（`:memory:` 供单测）。
+
+| 表 | 说明 | 源迁移 | 参照实现 |
+|----|------|--------|----------|
+| `audit_log` | F-AUDIT 审计事件（append-only 哈希链；who/when/action/why_source/session_id/approval_id/result/reason） | `0003_phase2_audit.sql` | `src/audit/audit-store.ts` |
+| `whitelist_version` | F-APPROVE 不可变白名单快照（只读当前生效版本） | `0004_phase2_approval.sql` | `src/approval/approval-store.ts` |
+| `approval_request` | F-APPROVE 审批单投影（state 为最新；载荷冻结） | `0004_phase2_approval.sql` | `src/approval/approval-store.ts` |
+| `approval_event` | F-APPROVE 审批事件流（append-only） | `0004_phase2_approval.sql` | `src/approval/approval-store.ts` |
+| `chat_session` | F-CHAT 服务端权威会话（state/last_active_at 可 UPDATE） | `0005_phase2_chat.sql` | `src/chat/chat-store.ts` |
+| `chat_message` | F-CHAT 消息流（**append-only**；仅存内容摘要；触发器拒 UPDATE/DELETE） | `0005_phase2_chat.sql` | `src/chat/chat-store.ts` |
+| `revoked_token` | F-CHAT access jti 吊销表（append-only；登出即作废） | `0005_phase2_chat.sql` | `src/chat/chat-store.ts` |
+| `refresh_token` | F-CHAT 刷新令牌摘要（one-time-use 轮换；重放即整链路失效） | `0005_phase2_chat.sql` | `src/chat/chat-store.ts` |
+
+> F-CHAT 追溯（FR-CHAT-006）：每条消息/动作/会话事件写入 `audit_log`，`action_type=chat.*`、`why_source='chat'`、绑定 `session_id + who_id(用户身份)`，与 F-APPROVE 的 `approval_id` 交叉引用。
+
+## 6. 隔离与权限（SQLite 承接 §12.7 / §12.1，无 PG 角色/RLS）
 
 ## 7. 应用侧读路径与 SQL 适配
 
