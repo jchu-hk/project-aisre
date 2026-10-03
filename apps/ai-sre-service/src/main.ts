@@ -12,18 +12,26 @@ import {
   emitIntakeReceived,
   emitLifecycleChanged,
 } from './audit';
+import {
+  buildApproval,
+  ApprovalRuntime,
+  seedInitialWhitelist,
+  WhitelistEntry,
+} from './approval';
 
 /** 构建一个极简 HTTP 处理器（仅 /health + / 概览） */
 function buildHandler(
   config: SreConfig,
   getIntake: () => IntakeRuntime,
   getAudit: () => AuditRuntime,
+  getApproval: () => ApprovalRuntime,
 ): http.RequestListener {
   return (req, res) => {
     const url = (req.url ?? '/').split('?')[0];
     if (url === '/health') {
       const intake = getIntake();
       const audit = getAudit();
+      const approval = getApproval();
       const body = {
         status: 'ok',
         service: 'ai-sre-service',
@@ -41,6 +49,13 @@ function buildHandler(
         audit: {
           chain_head: audit.store.head(),
           writer: audit.writer.stats(),
+        },
+        approval: {
+          whitelist_version: approval.store.currentVersion()?.version ?? null,
+          active_requests: approval.store.listRequests(
+            { state: undefined },
+            { page: 1, size: 1 },
+          ).total,
         },
         systems: config.systems.map((s) => ({
           system_id: s.system_id,
@@ -111,11 +126,24 @@ async function bootstrap(): Promise<void> {
     defaultActor: 'audit-console',
   });
 
-  // 单一 request 监听器：intake 收报优先，audit 读次之，query 读再次，最后基础处理器
-  // （避免多 listener 竞态写头）
+  // —— approval 运行时（F-APPROVE：白名单版本化 + 审批状态机，SQLite 单文件 + WAL）——
+  // 可通过 env APPROVAL_DB_PATH 覆盖；默认 data/approval.db。
+  // 每次判定/决定/白名单变更经 AuditWriter 异步发审计事件（与 F-AUDIT 集成）。
+  const approval: ApprovalRuntime = buildApproval({
+    dbPath: process.env.APPROVAL_DB_PATH || undefined,
+    audit: audit.writer,
+    defaultActor: 'approval-console',
+    defaultRole: 'oncall_sre',
+  });
+  // 首启/待接入态：播种白名单版本 v1（空条目集，fail-closed：未命中一律走审批）。
+  // 生效白名单由审批（type=whitelist_change）落新版本；此处不预置任何放行条目。
+  seedInitialWhitelist(approval.store, [] as WhitelistEntry[], 'system');
+
+  // 单一 request 监听器：intake 收报优先，audit 读次之，approval 写/读再次，query 读再次，
+  // 最后基础处理器（避免多 listener 竞态写头）
   const intake: IntakeRuntime = buildIntake(config);
   const ledger = new LifecycleLedger(); // 进程内参照：lifecycle ledger + query audit
-  const base = buildHandler(config, () => intake, () => audit);
+  const base = buildHandler(config, () => intake, () => audit, () => approval);
   const query = buildQueryHandle({
     store: intake.store,
     ledger,
@@ -132,6 +160,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
     if (audit.handle(req, res)) return; // audit 已处理（含 4xx/405）
+    if (approval.handle(req, res)) return; // approval 已处理（含 4xx/405）
     if (query(req, res)) return; // query 已处理（含 4xx）
     base(req, res);
   });
@@ -139,6 +168,12 @@ async function bootstrap(): Promise<void> {
   server.listen(port, host, () => {
     console.log(`[ai-sre-service] 监听 http://${host}:${port} (GET /health)`);
     console.log(`[ai-sre-service] Audit (F-AUDIT): GET /api/v1/audit/events|events/{id}|verify`);
+    console.log(
+      `[ai-sre-service] Approval (F-APPROVE): POST /api/v1/approvals|judge|{id}/decision|{id}/execute; GET /api/v1/approvals|{id}; GET /api/v1/whitelist/current|versions`,
+    );
+    console.log(
+      `[ai-sre-service]  白名单生效版本: v${approval.store.currentVersion()?.version ?? '-'}（未命中一律走审批，fail-closed）`,
+    );
     if (intake.disabled) {
       console.log('[ai-sre-service] User Intake (F-SRE-014): 未启用（intake_channels 为空 = 待接入态）');
     } else {
